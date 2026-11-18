@@ -1,0 +1,71 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "Vivian.moc3",
+		"Textures": [
+			"Vivian.4096/texture_00.png",
+			"Vivian.4096/texture_01.png",
+			"Vivian.4096/texture_02.png",
+			"Vivian.4096/texture_03.png",
+			"Vivian.4096/texture_04.png",
+			"Vivian.4096/texture_05.png",
+			"Vivian.4096/texture_06.png",
+			"Vivian.4096/texture_07.png",
+			"Vivian.4096/texture_08.png",
+			"Vivian.4096/texture_09.png",
+			"Vivian.4096/texture_10.png"
+		],
+		"Physics": "Vivian.physics3.json",
+		"DisplayInfo": "Vivian.cdi3.json",
+		"Expressions": [
+			{
+				"Name": "伞关闭",
+				"File": "umbrella_closed.exp3.json"
+			},
+			{
+				"Name": "哭",
+				"File": "cry.exp3.json"
+			},
+			{
+				"Name": "害羞",
+				"File": "shy.exp3.json"
+			},
+			{
+				"Name": "慌张",
+				"File": "panicked.exp3.json"
+			},
+			{
+				"Name": "白眼",
+				"File": "eye_roll.exp3.json"
+			},
+			{
+				"Name": "黑脸",
+				"File": "black_face.exp3.json"
+			}
+		],
+		"Motions": {
+			"idle": [
+				{
+					"File": "Scene1.motion3.json",
+					"FadeInTime": 500,
+					"FadeOutTime": 500
+				}
+			]
+		}
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		}
+	]
+}
