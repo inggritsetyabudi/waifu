@@ -5,6 +5,7 @@ export class AvatarSpeech {
   private context: AudioContext | null = null;
   private source: AudioBufferSourceNode | null = null;
   private frame = 0;
+  private playbackDone: (() => void) | null = null;
   private generation = 0;
   constructor(private mouth: (level: number) => void, private playback: (active: boolean) => void = () => {}) {}
 
@@ -57,19 +58,19 @@ export class AvatarSpeech {
       this.frame = requestAnimationFrame(update);
     };
     this.source = source;
-    source.onended = () => {
-      source.disconnect();
-      analyser.disconnect();
-      if (this.source === source) {
-        this.source = null;
-        cancelAnimationFrame(this.frame);
-        this.mouth(0);
-        this.playback(false);
-      }
-    };
-    source.start();
-    this.playback(true);
-    update();
+    await new Promise<void>((resolve) => {
+      this.playbackDone = resolve;
+      source.onended = () => {
+        source.disconnect(); analyser.disconnect();
+        if (this.source === source) {
+          this.source = null; this.playbackDone = null;
+          cancelAnimationFrame(this.frame);
+          this.mouth(0); this.playback(false);
+        }
+        resolve();
+      };
+      source.start(); this.playback(true); update();
+    });
   }
 
   stop() {
@@ -77,6 +78,7 @@ export class AvatarSpeech {
     cancelAnimationFrame(this.frame);
     this.source?.stop();
     this.source = null;
+    this.playbackDone?.(); this.playbackDone = null;
     this.mouth(0);
     this.playback(false);
   }

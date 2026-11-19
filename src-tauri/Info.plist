@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.rpl.ai-vtuber-assistant</string>
+<key>CFBundleName</key><string>Honey</string>
 <key>NSMicrophoneUsageDescription</key><string>Mikrofon digunakan saat Anda menekan Bicara untuk berbicara dengan avatar.</string>
 <key>NSSpeechRecognitionUsageDescription</key><string>Ucapan bahasa Indonesia diubah menjadi teks untuk dikirim ke asisten AI. Apple dapat memproses pengenalan ucapan secara online.</string>
 </dict></plist>

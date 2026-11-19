@@ -137,7 +137,7 @@ typedef void (*SpeechCallback)(const char *);
         self.deadline = [NSTimer scheduledTimerWithTimeInterval:45 repeats:NO block:^(NSTimer *timer) {
             (void)timer;
             VTSpeech *owner = weakSelf;
-            [owner finish:owner.text.length ? @"final" : @"error" text:owner.text.length ? owner.text : @"Tidak ada ucapan terdeteksi. Tekan ikon mikrofon untuk mencoba lagi."];
+            [owner finish:owner.text.length ? @"final" : @"stopped" text:owner.text.length ? owner.text : @""];
         }];
     } @catch (NSException *exception) {
         [self finish:@"error" text:exception.reason];
@@ -160,6 +160,15 @@ void vt_speech_start(const char *identifier, const char *language, SpeechCallbac
         VTSpeech *owner = [[VTSpeech alloc] init];
         currentSpeech = owner;
         owner.session = session; owner.text = @""; owner.callback = callback; owner.active = YES;
+        NSBundle *bundle = NSBundle.mainBundle;
+        NSString *speechUsage = [bundle objectForInfoDictionaryKey:@"NSSpeechRecognitionUsageDescription"];
+        NSString *microphoneUsage = [bundle objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"];
+        // Unbundled executables launched by an IDE inherit its TCC responsibility.
+        // Never call the privacy API in that state: macOS can terminate the process.
+        if (![bundle.bundlePath.pathExtension isEqualToString:@"app"] || speechUsage.length == 0 || microphoneUsage.length == 0) {
+            [owner finish:@"error" text:@"Untuk mikrofon, jalankan aplikasi .app lewat npm run desktop (bukan executable dari IDE). Ini mencegah crash izin macOS."];
+            return;
+        }
         [owner emit:@"authorizing" text:@""];
         [SFSpeechRecognizer requestAuthorization:^(SFSpeechRecognizerAuthorizationStatus status) {
             dispatch_async(dispatch_get_main_queue(), ^{

@@ -44,10 +44,10 @@ fn emo_in_middle_is_stripped() {
 }
 
 #[test]
-#[ignore] // requires local Keychain access; run with: cargo test -- --ignored
-fn keychain_key_is_readable() {
-    let key = crate::settings::get_api_key().expect("keyring error");
-    assert!(key.is_some(), "no NVIDIA API key stored in Keychain");
+#[ignore] // requires a configured .env; run with: cargo test -- --ignored
+fn env_key_is_readable() {
+    let key = crate::settings::get_api_key().expect("credential error");
+    assert!(key.is_some(), "no NVIDIA_API_KEY in .env");
     assert!(key.unwrap().starts_with("nvapi-"));
 }
 

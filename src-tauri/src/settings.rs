@@ -3,8 +3,32 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::Manager;
 
-const KEYRING_SERVICE: &str = "ai-vtuber-assistant";
-const KEYRING_USER: &str = "nvidia_api_key";
+static CREDENTIAL_ENV: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn init_credential_env(app: &tauri::AppHandle) -> Result<(), String> {
+    let path = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join(".env")
+    } else {
+        app.path()
+            .app_config_dir()
+            .map_err(|e| e.to_string())?
+            .join(".env")
+    };
+    let _ = CREDENTIAL_ENV.set(path);
+    Ok(())
+}
+
+fn credential_env() -> PathBuf {
+    CREDENTIAL_ENV.get().cloned().unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join(".env")
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -27,6 +51,8 @@ pub struct Settings {
     pub speech_provider: String,
     #[serde(default)]
     pub voicevox_style_id: Option<u32>,
+    #[serde(default)]
+    pub affectionate_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +110,7 @@ impl Default for Settings {
             remember_context_turns: 12,
             speech_provider: default_speech_provider(),
             voicevox_style_id: None,
+            affectionate_mode: false,
         }
     }
 }
@@ -154,26 +181,79 @@ pub fn save_settings(app: &tauri::AppHandle, settings: &Settings) -> Result<(), 
 }
 
 pub fn set_api_key(key: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())?;
-    if key.is_empty() {
-        entry.delete_credential().map_err(|e| e.to_string())?;
-        tracing::info!("API key deleted");
-    } else {
-        entry
-            .set_password(key)
-            .map_err(|e| format!("keyring error: {e}"))?;
-        tracing::info!("API key stored in OS keychain");
+    write_env_key(&credential_env(), key)
+}
+
+fn write_env_key(path: &std::path::Path, key: &str) -> Result<(), String> {
+    use std::io::Write;
+    if key.contains(['\n', '\r', '\0']) {
+        return Err("API key tidak valid".into());
     }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| "Tidak dapat membuat folder .env")?;
+    }
+    let previous = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err("Tidak dapat membaca .env".into()),
+    };
+    let mut lines: Vec<&str> = previous
+        .lines()
+        .filter(|line| {
+            let line = line
+                .trim_start()
+                .strip_prefix("export ")
+                .unwrap_or(line.trim_start());
+            line.split_once('=')
+                .is_none_or(|(name, _)| name.trim() != "NVIDIA_API_KEY")
+        })
+        .collect();
+    let entry = format!(
+        "NVIDIA_API_KEY={}",
+        serde_json::to_string(key).map_err(|_| "API key tidak valid")?
+    );
+    lines.push(&entry);
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(path.parent().ok_or("Lokasi .env tidak valid")?)
+            .map_err(|_| "Tidak dapat menulis .env")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| "Tidak dapat mengatur izin .env")?;
+    }
+    temporary
+        .write_all((lines.join("\n") + "\n").as_bytes())
+        .map_err(|_| "Tidak dapat menulis .env")?;
+    temporary
+        .persist(path)
+        .map_err(|_| "Tidak dapat menyimpan .env")?;
     Ok(())
 }
 
-pub fn get_api_key() -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())?;
-    match entry.get_password() {
-        Ok(k) => Ok(Some(k)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keyring error: {e}")),
+fn read_env_key(path: &std::path::Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
     }
+    let entries = dotenvy::from_path_iter(path).map_err(|_| "Tidak dapat membaca .env")?;
+    let mut key = None;
+    for entry in entries {
+        let (name, value) = entry.map_err(|_| "Format .env tidak valid")?;
+        if name == "NVIDIA_API_KEY" && !value.trim().is_empty() {
+            key = Some(value);
+        }
+    }
+    Ok(key)
+}
+
+pub fn get_api_key() -> Result<Option<String>, String> {
+    Ok(read_env_key(&credential_env())?.or_else(|| {
+        std::env::var("NVIDIA_API_KEY")
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+    }))
 }
 
 #[cfg(test)]
@@ -184,10 +264,37 @@ mod compatibility_tests {
         let mut old = serde_json::to_value(Settings::default()).unwrap();
         old.as_object_mut().unwrap().remove("speech_provider");
         old.as_object_mut().unwrap().remove("voicevox_style_id");
+        old.as_object_mut().unwrap().remove("affectionate_mode");
         old["nvidia_model"] = "existing-model".into();
         let loaded: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(loaded.nvidia_model, "existing-model");
         assert_eq!(loaded.speech_provider, "voicevox");
         assert_eq!(loaded.voicevox_style_id, None);
+        assert!(!loaded.affectionate_mode);
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+    #[test]
+    fn env_roundtrip_preserves_other_settings_and_replaces_existing_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(".env");
+        fs::write(
+            &path,
+            "# local config\nOTHER=value\nexport NVIDIA_API_KEY=old\n",
+        )
+        .unwrap();
+        write_env_key(&path, "test-replacement").unwrap();
+        assert_eq!(
+            read_env_key(&path).unwrap().as_deref(),
+            Some("test-replacement")
+        );
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("OTHER=value"));
+        assert_eq!(content.matches("NVIDIA_API_KEY").count(), 1);
+        write_env_key(&path, "").unwrap();
+        assert!(read_env_key(&path).unwrap().is_none());
     }
 }

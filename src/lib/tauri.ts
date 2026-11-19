@@ -22,12 +22,13 @@ export interface Settings {
   remember_context_turns: number;
   speech_provider: "voicevox" | "system";
   voicevox_style_id: number | null;
+  affectionate_mode: boolean;
 }
 
 export const getSettings = () => invoke<Settings>("cmd_get_settings");
 export const saveSettings = (s: Settings) => invoke("cmd_save_settings", { settings: s });
 export const hasApiKey = () => invoke<boolean>("cmd_has_api_key");
-export const setApiKey = (key: string) => invoke("cmd_set_api_key", { key });
+export const setApiKey = (key: string, persist = true) => invoke("cmd_set_api_key", { key, persist });
 export const testConnection = () => invoke<string>("cmd_test_connection");
 export const cancelChat = (id: string) => invoke("cmd_cancel_chat", { id });
 export const commitTurn = (user: string, assistant: string) =>
@@ -54,8 +55,8 @@ export interface ErrorPayload {
   message: string;
 }
 
-export async function sendChat(id: string, message: string) {
-  return invoke("cmd_chat", { id, message });
+export async function sendChat(id: string, message: string, screenText?: string) {
+  return invoke("cmd_chat", { id, message, screenText: screenText ?? null });
 }
 
 export function listenChatEvents(

@@ -1,9 +1,13 @@
+mod avatar_actions;
+mod credentials;
 mod nim;
 #[cfg(test)]
 mod nim_test;
 mod recognition;
+mod screen;
 mod settings;
 mod speech;
+mod touch;
 mod voicevox;
 
 use std::collections::HashMap;
@@ -17,6 +21,7 @@ use crate::settings::{Settings, get_api_key, load_settings, save_settings, set_a
 
 pub struct AppState {
     pub nim: Arc<NimClient>,
+    pub credentials: Arc<credentials::Credentials>,
     pub settings: Mutex<Settings>,
     /// Live cancellation tokens per chat request id.
     pub cancellations: Mutex<HashMap<String, CancellationToken>>,
@@ -55,21 +60,36 @@ fn cmd_save_settings(
 }
 
 #[tauri::command]
-async fn cmd_has_api_key() -> bool {
-    tauri::async_runtime::spawn_blocking(|| matches!(get_api_key(), Ok(Some(k)) if !k.is_empty()))
-        .await
-        .unwrap_or(false)
+fn cmd_has_api_key(state: State<AppState>) -> bool {
+    state.credentials.is_ready()
 }
 
 #[tauri::command]
-fn cmd_set_api_key(key: String) -> Result<(), String> {
-    set_api_key(key.trim())
+async fn cmd_set_api_key(
+    state: State<'_, AppState>,
+    key: String,
+    persist: Option<bool>,
+) -> Result<(), String> {
+    let credentials = state.credentials.clone();
+    let key = key.trim().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        credentials.set(key, persist.unwrap_or(true), set_api_key)
+    })
+    .await
+    .map_err(|_| "Tidak dapat menyimpan API key".to_string())?
+}
+
+async fn session_key(state: &State<'_, AppState>, explicit_retry: bool) -> Result<String, String> {
+    let credentials = state.credentials.clone();
+    tauri::async_runtime::spawn_blocking(move || credentials.key(explicit_retry, get_api_key))
+        .await
+        .map_err(|_| "Tidak dapat membuka API key".to_string())?
 }
 
 #[tauri::command]
 async fn cmd_test_connection(state: State<'_, AppState>) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
-    let key = get_api_key()?.ok_or("No API key configured")?;
+    let key = session_key(&state, true).await?;
     state.nim.test_connection(&settings, &key).await
 }
 
@@ -83,14 +103,61 @@ fn cmd_cancel_chat(state: State<AppState>, id: String) {
 }
 
 #[tauri::command]
+async fn cmd_touch_reaction(
+    state: State<'_, AppState>,
+    id: String,
+    context: touch::TouchContext,
+) -> Result<touch::TouchReply, String> {
+    let cancel = new_cancel(&state, &id);
+    let settings = state.settings.lock().unwrap().clone();
+    let result = async {
+        let key = session_key(&state, false).await?;
+        state
+            .nim
+            .touch_reply(&settings, &key, &context, cancel)
+            .await
+    }
+    .await;
+    state.cancellations.lock().unwrap().remove(&id);
+    result
+}
+
+#[tauri::command]
+async fn cmd_idle_reaction(
+    state: State<'_, AppState>,
+    id: String,
+    context: touch::IdleContext,
+) -> Result<touch::TouchReply, String> {
+    let cancel = new_cancel(&state, &id);
+    let settings = state.settings.lock().unwrap().clone();
+    let result = async {
+        let key = session_key(&state, false).await?;
+        state
+            .nim
+            .companion_reply(
+                &settings,
+                &key,
+                touch::idle_messages(&settings, &context),
+                1000,
+                cancel,
+            )
+            .await
+    }
+    .await;
+    state.cancellations.lock().unwrap().remove(&id);
+    result.map(touch::animate_idle)
+}
+
+#[tauri::command]
 async fn cmd_chat(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     message: String,
+    screen_text: Option<String>,
 ) -> Result<(), String> {
     let settings = state.settings.lock().unwrap().clone();
-    let key = get_api_key()?.ok_or("No NVIDIA API key configured")?;
+    let key = session_key(&state, false).await?;
 
     let system = ChatMessage {
         role: "system".into(),
@@ -105,7 +172,7 @@ async fn cmd_chat(
     }
     messages.push(ChatMessage {
         role: "user".into(),
-        content: message,
+        content: screen::screen_message(&message, screen_text.as_deref())?,
     });
 
     let cancel = new_cancel(&state, &id);
@@ -165,7 +232,8 @@ fn create_companion(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
         WebviewUrl::App("index.html?mode=companion".into()),
     )
     .title("Companion")
-    .inner_size(720.0, 600.0)
+    .inner_size(1000.0, 660.0)
+    .min_inner_size(640.0, 520.0)
     .decorations(false)
     .transparent(true)
     .always_on_top(true)
@@ -191,7 +259,7 @@ fn create_companion(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Ok(Some(monitor)) = win.primary_monitor() {
         let size = monitor.size();
         let scale = monitor.scale_factor();
-        let x = size.width as f64 / scale - 740.0;
+        let x = (size.width as f64 / scale - 1020.0).max(0.0);
         let y = 90.0;
         let _ = win.set_position(tauri::LogicalPosition::new(x, y));
     }
@@ -240,9 +308,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            settings::init_credential_env(app.handle())?;
             let settings = load_settings(app.handle());
             app.manage(AppState {
                 nim: Arc::new(NimClient::new()),
+                credentials: Arc::new(credentials::Credentials::default()),
                 settings: Mutex::new(settings),
                 cancellations: Mutex::new(HashMap::new()),
                 history: Arc::new(Mutex::new(Vec::new())),
@@ -276,11 +346,14 @@ pub fn run() {
             recognition::cmd_stop_listening,
             cmd_get_settings,
             cmd_report_avatar_status,
+            screen::cmd_capture_screen,
             cmd_save_settings,
             cmd_has_api_key,
             cmd_set_api_key,
             cmd_test_connection,
             cmd_chat,
+            cmd_touch_reaction,
+            cmd_idle_reaction,
             cmd_cancel_chat,
             cmd_commit_turn,
             cmd_clear_history,
